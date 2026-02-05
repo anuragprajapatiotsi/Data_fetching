@@ -83,6 +83,19 @@ async def _get_table_columns_with_types(schema: str, table: str) -> list[dict[st
     return [{"key": r[0], "type": map_type(r[1])} for r in rows]
 
 
+async def _get_all_tables(schema: str) -> list[str]:
+    sql = text("""
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = :schema
+        ORDER BY table_name
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema})
+        rows = res.fetchall()
+    return [r[0] for r in rows]
+
+
 def load_columns_dynamic(db_columns: list[str], auto_generate: bool = True) -> list[dict[str, Any]]:
     if not COLUMNS_PATH.exists():
         return [{"key": c, "label": c, "type": "string", "enableSorting": True} for c in db_columns]
@@ -115,7 +128,14 @@ def _cast_value(raw: Any, col_type: str) -> Any:
     return str(raw)
 
 
+
 # ---------------- API ----------------
+
+@app.get("/tables")
+async def get_tables(schema: str = Query("public")):
+    _validate_ident(schema, "schema")
+    tables = await _get_all_tables(schema)
+    return tables
 
 @app.get("/table")
 async def get_table(
