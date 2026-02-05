@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Body
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 
@@ -49,6 +51,29 @@ def _validate_ident(name: str, what: str) -> str:
     if not SAFE_IDENT.match(name):
         raise HTTPException(status_code=400, detail=f"Invalid {what}: {name}")
     return name
+
+
+
+def _is_query_safe(sql: str) -> bool:
+    sql_upper = sql.strip().upper()
+    
+    # Simple check for read-only
+    if not sql_upper.startswith("SELECT"):
+        return False
+
+    # Disallow multiple statements
+    if ";" in sql_upper.replace(";", ""): # naive check
+        stripped = sql.strip()
+        if ";" in stripped[:-1]:
+             return False
+
+    # Block destructive keywords
+    unsafe_keywords = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "EXEC", "EXECUTE"}
+    tokens = set(sql_upper.split())
+    if not tokens.isdisjoint(unsafe_keywords):
+        return False
+        
+    return True
 
 
 # ---------------- DB helpers ----------------
@@ -96,6 +121,26 @@ async def _get_all_tables(schema: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+async def _get_schemas_and_tables() -> dict[str, list[str]]:
+    sql = text("""
+        SELECT table_schema, table_name
+        FROM information_schema.tables
+        WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+        ORDER BY table_schema, table_name
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql)
+        rows = res.fetchall()
+
+    result = {}
+    for schema, table in rows:
+        if schema not in result:
+            result[schema] = []
+        result[schema].append(table)
+    
+    return result
+
+
 def load_columns_dynamic(db_columns: list[str], auto_generate: bool = True) -> list[dict[str, Any]]:
     if not COLUMNS_PATH.exists():
         return [{"key": c, "label": c, "type": "string", "enableSorting": True} for c in db_columns]
@@ -131,11 +176,55 @@ def _cast_value(raw: Any, col_type: str) -> Any:
 
 # ---------------- API ----------------
 
+class QueryRequest(BaseModel):
+    query: str
+
+@app.post("/query")
+async def execute_query(request: QueryRequest):
+    sql = request.query
+    if not _is_query_safe(sql):
+        raise HTTPException(status_code=400, detail="Unsafe query or invalid syntax. Only SELECT statements allowed.")
+    
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text(sql))
+            rows = result.mappings().all()
+            
+            # Extract header from keys if rows exist, else from result.keys() (if available)
+            # SQLAlchemy TextResult doesn't always give keys immediately if no rows, 
+            # but usually result.keys() works for SELECT.
+            keys = list(result.keys())
+            
+            data = []
+            for r in rows:
+                row = {}
+                for k, v in r.items():
+                    # simplistic type mapping for JSON serialization
+                    row[k] = str(v) if v is not None else None 
+                data.append(row)
+                
+            return {
+                "columns": [{"key": k, "label": k, "type": "string"} for k in keys], # simpler column infer msg
+                "data": data,
+                "error": None
+            }
+            
+    except SQLAlchemyError as e:
+         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+         raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/tables")
 async def get_tables(schema: str = Query("public")):
     _validate_ident(schema, "schema")
     tables = await _get_all_tables(schema)
     return tables
+
+
+@app.get("/schemas")
+async def get_schemas():
+    return await _get_schemas_and_tables()
 
 @app.get("/table")
 async def get_table(
