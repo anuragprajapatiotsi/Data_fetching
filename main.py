@@ -55,22 +55,25 @@ def _validate_ident(name: str, what: str) -> str:
 
 
 def _is_query_safe(sql: str) -> bool:
-    sql_upper = sql.strip().upper()
+    # Normalize for checking
+    sql_clean = sql.strip()
     
-    # Simple check for read-only
-    if not sql_upper.startswith("SELECT"):
+    # 1. Deny-list of destructive keywords (matched as whole words)
+    #    We use regex \bKEYWORD\b to avoid matching "update_date" or "insert_id"
+    unsafe_keywords = [
+        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", 
+        "CREATE", "GRANT", "REVOKE", "COPY", "CALL", "DO", "EXEC", "EXECUTE"
+    ]
+    pattern = r"\b(" + "|".join(unsafe_keywords) + r")\b"
+    
+    if re.search(pattern, sql_clean, re.IGNORECASE):
         return False
 
-    # Disallow multiple statements
-    if ";" in sql_upper.replace(";", ""): # naive check
-        stripped = sql.strip()
-        if ";" in stripped[:-1]:
-             return False
-
-    # Block destructive keywords
-    unsafe_keywords = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE", "EXEC", "EXECUTE"}
-    tokens = set(sql_upper.split())
-    if not tokens.isdisjoint(unsafe_keywords):
+    # 2. Disallow multiple statements (semicolon check)
+    #    We allow a single trailing semicolon, but not multiple statements.
+    #    Naive check: if ; appears before the end (ignoring whitespace).
+    #    (This is imperfect without a parser but catches simple "SELECT ...; DROP ..." attacks)
+    if ";" in sql_clean[:-1]:
         return False
         
     return True
@@ -310,41 +313,85 @@ def _cast_value(raw: Any, col_type: str) -> Any:
 
 class QueryRequest(BaseModel):
     query: str
+    limit: int = 500
+    offset: int = 0
 
 @app.post("/query")
 async def execute_query(request: QueryRequest):
-    sql = request.query
-    if not _is_query_safe(sql):
-        raise HTTPException(status_code=400, detail="Unsafe query or invalid syntax. Only SELECT statements allowed.")
+    original_sql = request.query.strip()
+    limit = request.limit
+    offset = request.offset
+
+    # 1. Safety Check
+    if not _is_query_safe(original_sql):
+        raise HTTPException(
+            status_code=400, 
+            detail="Query contains restricted keywords (e.g. INSERT, UPDATE, DROP) or multiple statements."
+        )
+    
+    # 2. Wrap query to enforce row limit and pagination
+    #    Remove trailing semicolon if present to avoid syntax error in subquery
+    inner_sql = original_sql.rstrip(";")
+    
+    #    We select * from the user's query with LIMIT and OFFSET
+    wrapped_sql = text(f"""
+        SELECT * FROM (
+            {inner_sql}
+        ) AS limited_query
+        LIMIT :limit OFFSET :offset
+    """)
+    
+    #    Count query to get total rows
+    count_sql = text(f"""
+        SELECT COUNT(*) FROM (
+            {inner_sql}
+        ) AS count_query
+    """)
     
     try:
         async with engine.connect() as conn:
-            result = await conn.execute(text(sql))
-            rows = result.mappings().all()
+            # Execute count query
+            total_rows_res = await conn.execute(count_sql)
+            total_rows = total_rows_res.scalar_one()
+
+            # Execute data query
+            result = await conn.execute(wrapped_sql, {"limit": limit, "offset": offset})
             
-            # Extract header from keys if rows exist, else from result.keys() (if available)
-            # SQLAlchemy TextResult doesn't always give keys immediately if no rows, 
-            # but usually result.keys() works for SELECT.
+            # 3. Safe Fetch
+            #    We fetch up to 'limit' rows.
+            rows = result.fetchmany(limit)
+            
+            #    Get columns
             keys = list(result.keys())
             
             data = []
             for r in rows:
-                row = {}
-                for k, v in r.items():
-                    # simplistic type mapping for JSON serialization
-                    row[k] = str(v) if v is not None else None 
-                data.append(row)
+                # Convert RowMapping/Row to dict, casting values
+                row_dict = {}
+                mapping = r._mapping if hasattr(r, '_mapping') else r
                 
+                for k, v in mapping.items():
+                    row_dict[k] = str(v) if v is not None else None
+                data.append(row_dict)
+            
+            row_count = len(data)
+            # has_more is true if we haven't reached the total count yet
+            has_more = (offset + row_count) < total_rows
+            
             return {
-                "columns": [{"key": k, "label": k, "type": "string"} for k in keys], # simpler column infer msg
+                "columns": [{"key": k, "label": k, "type": "string"} for k in keys],
                 "data": data,
+                "row_count": row_count,
+                "total_rows": total_rows,
+                "has_more": has_more,
                 "error": None
             }
             
     except SQLAlchemyError as e:
-         raise HTTPException(status_code=400, detail=str(e))
+        # Catch SQL syntax errors from the user's query
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-         raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/tables")
