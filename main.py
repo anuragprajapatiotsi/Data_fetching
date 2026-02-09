@@ -141,6 +141,138 @@ async def _get_schemas_and_tables() -> dict[str, list[str]]:
     return result
 
 
+async def _get_pg_schemas() -> list[str]:
+    # Exclude system schemas usually hidden in DBeaver/pgAdmin unless enabled
+    sql = text("""
+        SELECT nspname
+        FROM pg_catalog.pg_namespace
+        WHERE nspname !~ '^pg_'
+          AND nspname <> 'information_schema'
+        ORDER BY nspname
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql)
+        rows = res.fetchall()
+    return [r[0] for r in rows]
+
+
+    return [r[0] for r in rows]
+
+
+async def _get_pg_tables(schema: str) -> list[str]:
+    sql = text("""
+        SELECT tablename
+        FROM pg_tables
+        WHERE schemaname = :schema
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema})
+        return [r[0] for r in res.fetchall()]
+
+
+async def _get_pg_views(schema: str) -> list[str]:
+    sql = text("""
+        SELECT viewname
+        FROM pg_views
+        WHERE schemaname = :schema
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema})
+        return [r[0] for r in res.fetchall()]
+
+
+async def _get_pg_matviews(schema: str) -> list[str]:
+    sql = text("""
+        SELECT matviewname
+        FROM pg_matviews
+        WHERE schemaname = :schema
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema})
+        return [r[0] for r in res.fetchall()]
+
+
+async def _get_pg_indexes(schema: str) -> list[dict[str, str]]:
+    sql = text("""
+        SELECT indexname, tablename
+        FROM pg_indexes
+        WHERE schemaname = :schema
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema})
+        return [{"name": r[0], "table": r[1]} for r in res.fetchall()]
+
+
+async def _get_pg_sequences(schema: str) -> list[str]:
+    sql = text("""
+        SELECT c.relname AS sequence_name
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'S'
+          AND n.nspname = :schema
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema})
+        return [r[0] for r in res.fetchall()]
+
+
+async def _get_pg_datatypes(schema: str) -> list[str]:
+    sql = text("""
+        SELECT typname
+        FROM pg_catalog.pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = :schema
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema})
+        return [r[0] for r in res.fetchall()]
+
+
+async def _get_pg_functions(schema: str) -> list[str]:
+    sql = text("""
+        SELECT proname
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = :schema
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema})
+        return [r[0] for r in res.fetchall()]
+
+
+async def _get_pg_columns(schema: str, table_name: str) -> list[dict[str, Any]]:
+    # Resolve table OID first (or join, but two steps is cleaner for safety check)
+    # We can join pg_class + pg_namespace + pg_attribute + pg_type
+    sql = text("""
+        SELECT 
+            a.attname,
+            format_type(a.atttypid, a.atttypmod) as format_type,
+            a.attnotnull,
+            a.attnum
+        FROM pg_catalog.pg_attribute a
+        JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = :schema
+          AND c.relname = :table
+          AND a.attnum > 0 
+          AND NOT a.attisdropped
+        ORDER BY a.attnum
+    """)
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, {"schema": schema, "table": table_name})
+        rows = res.fetchall()
+        
+    return [
+        {
+            "name": r[0],
+            "type": r[1],
+            "nullable": not r[2],
+            "position": r[3]
+        }
+        for r in rows
+    ]
+
+
 def load_columns_dynamic(db_columns: list[str], auto_generate: bool = True) -> list[dict[str, Any]]:
     if not COLUMNS_PATH.exists():
         return [{"key": c, "label": c, "type": "string", "enableSorting": True} for c in db_columns]
@@ -351,3 +483,62 @@ async def get_table(
             "table": f"{schema}.{table}",
         },
     }
+
+
+# ---------------- Metadata API (pg_catalog) ----------------
+
+@app.get("/metadata/schemas")
+async def get_metadata_schemas():
+    return await _get_pg_schemas()
+
+
+@app.get("/metadata/schemas/{schema}/tables")
+async def get_metadata_tables(schema: str):
+    _validate_ident(schema, "schema")
+    return await _get_pg_tables(schema)
+
+
+@app.get("/metadata/schemas/{schema}/views")
+async def get_metadata_views(schema: str):
+    _validate_ident(schema, "schema")
+    return await _get_pg_views(schema)
+
+
+@app.get("/metadata/schemas/{schema}/matviews")
+async def get_metadata_matviews(schema: str):
+    _validate_ident(schema, "schema")
+    return await _get_pg_matviews(schema)
+
+
+@app.get("/metadata/schemas/{schema}/indexes")
+async def get_metadata_indexes(schema: str):
+    _validate_ident(schema, "schema")
+    return await _get_pg_indexes(schema)
+
+
+@app.get("/metadata/schemas/{schema}/sequences")
+async def get_metadata_sequences(schema: str):
+    _validate_ident(schema, "schema")
+    return await _get_pg_sequences(schema)
+
+
+@app.get("/metadata/schemas/{schema}/datatypes")
+async def get_metadata_datatypes(schema: str):
+    _validate_ident(schema, "schema")
+    return await _get_pg_datatypes(schema)
+
+
+@app.get("/metadata/schemas/{schema}/functions")
+async def get_metadata_functions(schema: str):
+    _validate_ident(schema, "schema")
+    return await _get_pg_functions(schema)
+
+
+@app.get("/metadata/schemas/{schema}/columns")
+async def get_metadata_columns(
+    schema: str, 
+    table: str = Query(..., description="Table or View name")
+):
+    _validate_ident(schema, "schema")
+    _validate_ident(table, "table")
+    return await _get_pg_columns(schema, table)
