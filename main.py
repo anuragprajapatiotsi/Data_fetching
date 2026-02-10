@@ -318,7 +318,7 @@ def _cast_value(raw: Any, col_type: str) -> Any:
 
 class QueryRequest(BaseModel):
     query: str
-    limit: int = 500
+    limit: int = 10
     offset: int = 0
     query_id: Optional[str] = None
 
