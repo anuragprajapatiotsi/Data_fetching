@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
+import uuid
 
 from fastapi import FastAPI, HTTPException, Query, Body
 from pydantic import BaseModel
@@ -34,6 +35,10 @@ ColumnType = Literal["string", "number", "boolean", "date", "datetime"]
 SortDir = Literal["asc", "desc"]
 
 SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# ---------------- Global State ----------------
+
+QUERY_PIDS: dict[str, int] = {}
 
 
 # ---------------- Cache ----------------
@@ -315,12 +320,36 @@ class QueryRequest(BaseModel):
     query: str
     limit: int = 500
     offset: int = 0
+    query_id: Optional[str] = None
+
+class CancelRequest(BaseModel):
+    query_id: str
+
+@app.post("/query/cancel")
+async def cancel_query(request: CancelRequest):
+    query_id = request.query_id
+    pid = QUERY_PIDS.get(query_id)
+    
+    if not pid:
+         raise HTTPException(status_code=404, detail="Query ID not found or query already completed")
+         
+    try:
+        # Use a new connection to cancel
+        sql = text("SELECT pg_cancel_backend(:pid)")
+        async with engine.connect() as conn:
+            await conn.execute(sql, {"pid": pid})
+            
+        return {"cancelled": True, "pid": pid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/query")
 async def execute_query(request: QueryRequest):
     original_sql = request.query.strip()
     limit = request.limit
     offset = request.offset
+    query_id = request.query_id or str(uuid.uuid4())
 
     # 1. Safety Check
     if not _is_query_safe(original_sql):
@@ -350,42 +379,60 @@ async def execute_query(request: QueryRequest):
     
     try:
         async with engine.connect() as conn:
-            # Execute count query
-            total_rows_res = await conn.execute(count_sql)
-            total_rows = total_rows_res.scalar_one()
+            # 2.5 Query Tracking
+            # Get current PID
+            pid_res = await conn.execute(text("SELECT pg_backend_pid()"))
+            pid = pid_res.scalar_one()
+            
+            QUERY_PIDS[query_id] = pid
+            
+            try:
+                # Execute count query
+                total_rows_res = await conn.execute(count_sql)
+                total_rows = total_rows_res.scalar_one()
 
-            # Execute data query
-            result = await conn.execute(wrapped_sql, {"limit": limit, "offset": offset})
-            
-            # 3. Safe Fetch
-            #    We fetch up to 'limit' rows.
-            rows = result.fetchmany(limit)
-            
-            #    Get columns
-            keys = list(result.keys())
-            
-            data = []
-            for r in rows:
-                # Convert RowMapping/Row to dict, casting values
-                row_dict = {}
-                mapping = r._mapping if hasattr(r, '_mapping') else r
+                # Execute data query
+                result = await conn.execute(wrapped_sql, {"limit": limit, "offset": offset})
                 
-                for k, v in mapping.items():
-                    row_dict[k] = str(v) if v is not None else None
-                data.append(row_dict)
-            
-            row_count = len(data)
-            # has_more is true if we haven't reached the total count yet
-            has_more = (offset + row_count) < total_rows
-            
-            return {
-                "columns": [{"key": k, "label": k, "type": "string"} for k in keys],
-                "data": data,
-                "row_count": row_count,
-                "total_rows": total_rows,
-                "has_more": has_more,
-                "error": None
-            }
+                # 3. Safe Fetch
+                #    We fetch up to 'limit' rows.
+                rows = result.fetchmany(limit)
+                
+                #    Get columns
+                keys = list(result.keys())
+                
+                data = []
+                for r in rows:
+                    # Convert RowMapping/Row to dict, casting values
+                    row_dict = {}
+                    mapping = r._mapping if hasattr(r, '_mapping') else r
+                    
+                    for k, v in mapping.items():
+                        row_dict[k] = str(v) if v is not None else None
+                    data.append(row_dict)
+                
+                row_count = len(data)
+                # has_more is true if we haven't reached the total count yet
+                has_more = (offset + row_count) < total_rows
+                
+                return {
+                    "columns": [{"key": k, "label": k, "type": "string"} for k in keys],
+                    "data": data,
+                    "row_count": row_count,
+                    "total_rows": total_rows,
+                    "has_more": has_more,
+                    "query_id": query_id,
+                    "error": None
+                }
+            except SQLAlchemyError as e:
+                # Catch specific cancellation error if possible, but generic handling is fine
+                # Postgres error code for query cancelled is 57014 (query_canceled)
+                # But here we just re-raise or handle.
+                # If wrapped in DBAPIError, orig.pgcode might be available.
+                raise e
+            finally:
+                # Clean up PID
+                QUERY_PIDS.pop(query_id, None)
             
     except SQLAlchemyError as e:
         # Catch SQL syntax errors from the user's query
