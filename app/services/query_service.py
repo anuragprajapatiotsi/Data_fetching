@@ -1,14 +1,28 @@
 import uuid
+import re
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi import HTTPException
 from app.core.database import engine
 from app.repositories import query_repository
-from app.services import cancel_service
+from app.services import cancel_service, semantic_service
 from app.utils.sql_safety import _is_query_safe
 
 async def execute_query_logic(query: str, limit: int, offset: int, client_query_id: str | None):
     original_sql = query.strip()
+
+    def _detect_table(query: str) -> tuple[str, str] | None:
+        # Simple heuristic for single table SELECT
+        # FROM "schema"."table" or FROM schema.table or FROM table
+        # Matches found in FROM clause
+        match = re.search(r'FROM\s+("?[\w]+"?)(\.("?[\w]+"?))?', query, re.IGNORECASE)
+        if match:
+            part1 = match.group(1).replace('"', '')
+            part2 = match.group(3)
+            if part2:
+                return part1, part2.replace('"', '')
+            return "public", part1
+        return None
     query_id = client_query_id or str(uuid.uuid4())
 
     # 1. Safety Check
@@ -85,8 +99,19 @@ async def execute_query_logic(query: str, limit: int, offset: int, client_query_
                 row_count = len(data)
                 has_more = (offset + row_count) < total_rows
                 
+                # Detect table for semantic types
+                detected = _detect_table(original_sql)
+                semantic_map = {}
+                if detected:
+                    schema, table = detected
+                    try:
+                        merged = await semantic_service.get_merged_columns(schema, table)
+                        semantic_map = {c["column"]: c["semanticType"] for c in merged}
+                    except Exception:
+                        pass
+
                 return {
-                    "columns": [{"key": k, "label": k, "type": "string"} for k in keys],
+                    "columns": [{"key": k, "label": k, "type": semantic_map.get(k, "string")} for k in keys],
                     "data": data,
                     "row_count": row_count,
                     "total_rows": total_rows,
