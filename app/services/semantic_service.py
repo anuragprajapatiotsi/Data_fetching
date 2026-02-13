@@ -124,3 +124,6 @@ async def get_merged_columns(schema: str, table: str) -> List[Dict[str, Any]]:
     # Update cache
     _semantic_cache[(schema, table)] = merged
     return merged
+
+async def get_semantic_column_types(type_filter: str | None = None) -> List[Dict[str, str]]:
+    return await semantic_repository.get_semantic_column_types(type_filter)

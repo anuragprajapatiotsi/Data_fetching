@@ -55,6 +55,16 @@ async def delete_table(session: AsyncSession, dataset_id: UUID, table_id: UUID) 
         return True
     return False
 
+async def get_table_by_name(session: AsyncSession, dataset_id: UUID, table_name: str) -> Optional[DatasetTable]:
+    result = await session.execute(
+        select(DatasetTable).where(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.table_name == table_name
+        )
+    )
+    return result.scalars().first()
+
+
 async def add_join(session: AsyncSession, dataset_id: UUID, join_data: DatasetJoinCreate) -> DatasetJoin:
     db_join = DatasetJoin(dataset_id=dataset_id, **join_data.model_dump())
     session.add(db_join)
@@ -105,3 +115,54 @@ async def update_table_position(
     await session.commit()
     await session.refresh(db_table)
     return db_table
+    await session.commit()
+    await session.refresh(db_table)
+    return db_table
+
+from app.models.dataset import DatasetColumn
+from app.schemas.dataset_column import DatasetColumnCreate
+
+async def upsert_dataset_column(
+    session: AsyncSession, 
+    dataset_id: UUID, 
+    table_id: UUID, 
+    column_data: DatasetColumnCreate
+) -> DatasetColumn:
+    # Verify table belongs to dataset
+    result = await session.execute(
+        select(DatasetTable).where(
+            DatasetTable.id == table_id,
+            DatasetTable.dataset_id == dataset_id
+        )
+    )
+    if not result.scalars().first():
+        return None
+
+    # Check if column exists
+    result = await session.execute(
+        select(DatasetColumn).where(
+            DatasetColumn.dataset_table_id == table_id,
+            DatasetColumn.column_name == column_data.column_name
+        )
+    )
+    db_column = result.scalars().first()
+
+    if db_column:
+        # Update
+        if column_data.role is not None:
+            db_column.role = column_data.role
+        if column_data.definition_code is not None:
+            db_column.definition_code = column_data.definition_code
+        if column_data.display_name is not None:
+            db_column.display_name = column_data.display_name
+    else:
+        # Create
+        db_column = DatasetColumn(
+            dataset_table_id=table_id,
+            **column_data.model_dump()
+        )
+        session.add(db_column)
+
+    await session.commit()
+    await session.refresh(db_column)
+    return db_column

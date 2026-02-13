@@ -8,6 +8,7 @@ router = APIRouter(prefix="/semantic", tags=["Semantic"])
 class SemanticTypeResponse(BaseModel):
     code: str
     label: str
+    
 
 class SemanticMappingRequest(BaseModel):
     schema_name: str = Field(..., alias="schema")
@@ -49,3 +50,15 @@ async def create_bulk_semantic_mapping(request: BulkSemanticMappingRequest):
 @router.get("/columns")
 async def get_semantic_columns(schema: str, table: str):
     return await semantic_service.get_merged_columns(schema, table)
+
+modeling_router = APIRouter(prefix="/semantic-modeling", tags=["Semantic Modeling"])
+
+class SemanticColumnTypeResponse(BaseModel):
+    code: str
+    type: str
+    category: str
+    name: str
+
+@modeling_router.get("/column-types", response_model=List[SemanticColumnTypeResponse])
+async def get_semantic_column_types(type: str | None = None):
+    return await semantic_service.get_semantic_column_types(type)

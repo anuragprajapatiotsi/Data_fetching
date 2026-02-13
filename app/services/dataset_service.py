@@ -28,6 +28,10 @@ async def get_tables(session: AsyncSession, dataset_id: UUID) -> List[DatasetTab
 async def delete_table(session: AsyncSession, dataset_id: UUID, table_id: UUID) -> bool:
     return await dataset_repository.delete_table(session, dataset_id, table_id)
 
+async def get_table_by_name(session: AsyncSession, dataset_id: UUID, table_name: str) -> Optional[DatasetTable]:
+    return await dataset_repository.get_table_by_name(session, dataset_id, table_name)
+
+
 async def add_join(session: AsyncSession, dataset_id: UUID, join_data: DatasetJoinCreate) -> DatasetJoin:
     return await dataset_repository.add_join(session, dataset_id, join_data)
 
@@ -44,3 +48,15 @@ async def update_table_position(
     update_data: DatasetTableUpdate
 ) -> Optional[DatasetTable]:
     return await dataset_repository.update_table_position(session, dataset_id, table_id, update_data)
+    return await dataset_repository.update_table_position(session, dataset_id, table_id, update_data)
+
+from app.models.dataset import DatasetColumn
+from app.schemas.dataset_column import DatasetColumnCreate
+
+async def save_column_metadata(
+    session: AsyncSession, 
+    dataset_id: UUID, 
+    table_id: UUID, 
+    column_data: DatasetColumnCreate
+) -> Optional[DatasetColumn]:
+    return await dataset_repository.upsert_dataset_column(session, dataset_id, table_id, column_data)

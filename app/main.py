@@ -16,6 +16,7 @@ app.include_router(query.router)
 app.include_router(metadata.router)
 app.include_router(tables.router)
 app.include_router(semantic.router)
+app.include_router(semantic.modeling_router)
 app.include_router(datasets.router)
 
 from app.core.database import engine

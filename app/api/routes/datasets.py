@@ -132,3 +132,53 @@ async def delete_dataset_join(
     success = await dataset_service.delete_join(db, dataset_id, join_id)
     if not success:
         raise HTTPException(status_code=404, detail="Join not found in dataset")
+
+from app.schemas.dataset_column import DatasetColumnCreate, DatasetColumnResponse
+
+@router.put("/{dataset_id}/tables/{table_id}/columns/{column_name}", response_model=DatasetColumnResponse)
+async def save_dataset_column(
+    dataset_id: UUID,
+    table_id: UUID,
+    column_name: str,
+    column_data: DatasetColumnCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    # Ensure column_name in path matches body or override it
+    column_data.column_name = column_name 
+    
+    saved_column = await dataset_service.save_column_metadata(db, dataset_id, table_id, column_data)
+    if not saved_column:
+        raise HTTPException(status_code=404, detail="Table not found in dataset")
+    if not saved_column:
+        raise HTTPException(status_code=404, detail="Table not found in dataset")
+    return saved_column
+
+from app.schemas.dataset_column import DatasetColumnCreateRequest
+
+@router.post("/{dataset_id}/columns", response_model=DatasetColumnResponse)
+async def create_dataset_column(
+    dataset_id: UUID,
+    column_request: DatasetColumnCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    # Extract table_id or resolve from table_name
+    table_id = column_request.table_id
+    if not table_id:
+        if column_request.table_name:
+            table = await dataset_service.get_table_by_name(db, dataset_id, column_request.table_name)
+            if not table:
+                raise HTTPException(status_code=404, detail=f"Table '{column_request.table_name}' not found in dataset")
+            table_id = table.id
+        else:
+             raise HTTPException(status_code=400, detail="Either table_id or table_name must be provided")
+
+    # Base payload (DatasetColumnCreate)
+    col_data = DatasetColumnCreate(**column_request.model_dump(exclude={"table_id", "table_name"}))
+    
+    saved_column = await dataset_service.save_column_metadata(db, dataset_id, table_id, col_data)
+    if not saved_column:
+        raise HTTPException(status_code=404, detail="Table not found in dataset")
+    return saved_column
+
+
+

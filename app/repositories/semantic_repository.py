@@ -51,3 +51,29 @@ async def upsert_bulk_semantic_mappings(mappings: list[dict]):
         # engine.begin() acts as a context manager that commits on exit
 
 
+
+async def get_semantic_column_types(type_filter: str | None = None) -> list[dict[str, str]]:
+    query_str = """
+        SELECT sm_column_code as code, columntype as type, dimensiontype as category, referencedimension as name
+        FROM _prebuilt_sys._prebuilt_semantic_modeling_column_types
+    """
+    params = {}
+    if type_filter:
+        query_str += " WHERE columntype = :type_filter"
+        params["type_filter"] = type_filter
+        
+    sql = text(query_str)
+    
+    async with engine.connect() as conn:
+        res = await conn.execute(sql, params)
+        rows = res.fetchall()
+        
+    return [
+        {
+            "code": r.code, 
+            "type": r.type, 
+            "category": r.category, 
+            "name": r.name
+        } 
+        for r in rows
+    ]

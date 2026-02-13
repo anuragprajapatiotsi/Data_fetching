@@ -39,4 +39,19 @@ class DatasetTable(Base):
     position_x = Column(Float, default=0.0)
     position_y = Column(Float, default=0.0)
 
+
     dataset = relationship("Dataset", back_populates="tables")
+    columns = relationship("DatasetColumn", back_populates="table", cascade="all, delete-orphan", lazy="selectin")
+
+class DatasetColumn(Base):
+    __tablename__ = "dataset_columns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dataset_table_id = Column(UUID(as_uuid=True), ForeignKey("dataset_tables.id", ondelete="CASCADE"), nullable=False)
+    column_name = Column(String, nullable=False)
+    role = Column(String, nullable=True) # Dimension | Indicator
+    definition_code = Column(String, nullable=True)
+    display_name = Column(String, nullable=True)
+
+    table = relationship("DatasetTable", back_populates="columns")
+

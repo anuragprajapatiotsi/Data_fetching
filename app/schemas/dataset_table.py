@@ -15,9 +15,14 @@ class DatasetTableUpdate(BaseModel):
     position_x: Optional[float] = None
     position_y: Optional[float] = None
 
+
+from typing import List
+from app.schemas.dataset_column import DatasetColumnResponse
+
 class DatasetTableResponse(DatasetTableBase):
     id: UUID
     dataset_id: UUID
+    columns: List[DatasetColumnResponse] = []
 
     class Config:
         from_attributes = True
