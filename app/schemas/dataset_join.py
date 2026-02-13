@@ -2,12 +2,14 @@ from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel
 
+
 class DatasetJoinBase(BaseModel):
-    left_table: str
+    left_dataset_table_id: UUID
     left_column: str
-    right_table: str
+    right_dataset_table_id: UUID
     right_column: str
     join_type: Literal["inner", "left", "right"]
+
 
 class DatasetJoinCreate(DatasetJoinBase):
     pass

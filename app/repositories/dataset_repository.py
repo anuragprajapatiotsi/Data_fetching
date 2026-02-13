@@ -65,12 +65,41 @@ async def get_table_by_name(session: AsyncSession, dataset_id: UUID, table_name:
     return result.scalars().first()
 
 
-async def add_join(session: AsyncSession, dataset_id: UUID, join_data: DatasetJoinCreate) -> DatasetJoin:
+
+async def add_join(session: AsyncSession, dataset_id: UUID, join_data: DatasetJoinCreate) -> Optional[DatasetJoin]:
+    # Validate tables belong to dataset
+    query = select(DatasetTable.id).where(
+        DatasetTable.dataset_id == dataset_id,
+        DatasetTable.id.in_([join_data.left_dataset_table_id, join_data.right_dataset_table_id])
+    )
+    result = await session.execute(query)
+    found_ids = result.scalars().all()
+    
+    if len(found_ids) != 2:
+        return None  # One or both tables do not belong to the dataset
+        
+    # Check for existing duplicate join (optional but good practice)
+    # prevent exact duplicate edges
+    distinct_query = select(DatasetJoin).where(
+        DatasetJoin.dataset_id == dataset_id,
+        DatasetJoin.left_dataset_table_id == join_data.left_dataset_table_id,
+        DatasetJoin.left_column == join_data.left_column,
+        DatasetJoin.right_dataset_table_id == join_data.right_dataset_table_id,
+        DatasetJoin.right_column == join_data.right_column
+    )
+    existing = await session.execute(distinct_query)
+    if existing.scalars().first():
+         # return existing? or error? For now let's just create another one if user wants, 
+         # but usually visual graph prevents duplicates. 
+         # The requirement said "prevent duplicate joins".
+         return None
+
     db_join = DatasetJoin(dataset_id=dataset_id, **join_data.model_dump())
     session.add(db_join)
     await session.commit()
     await session.refresh(db_join)
     return db_join
+
 
 async def get_joins(session: AsyncSession, dataset_id: UUID) -> List[DatasetJoin]:
     result = await session.execute(select(DatasetJoin).where(DatasetJoin.dataset_id == dataset_id))
@@ -165,4 +194,12 @@ async def upsert_dataset_column(
 
     await session.commit()
     await session.refresh(db_column)
+    await session.commit()
+    await session.refresh(db_column)
     return db_column
+
+async def get_dataset_columns(session: AsyncSession, dataset_id: UUID) -> List[DatasetColumn]:
+    stmt = select(DatasetColumn).join(DatasetTable).where(DatasetTable.dataset_id == dataset_id)
+    result = await session.execute(stmt)
+    return result.scalars().all()
+

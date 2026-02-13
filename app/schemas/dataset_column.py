@@ -13,9 +13,10 @@ class DatasetColumnCreate(DatasetColumnBase):
     pass
 
 
+
 class DatasetColumnCreateRequest(DatasetColumnCreate):
-    table_id: Optional[UUID] = None
-    table_name: Optional[str] = None
+    dataset_table_id: UUID
+
 
 
 

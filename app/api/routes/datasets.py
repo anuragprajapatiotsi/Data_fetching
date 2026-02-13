@@ -110,7 +110,13 @@ async def add_dataset_join(
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    return await dataset_service.add_join(db, dataset_id, join_data)
+    new_join = await dataset_service.add_join(db, dataset_id, join_data)
+    if not new_join:
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid join. Tables must belong to the dataset or join already exists."
+        )
+    return new_join
 
 @router.get("/{dataset_id}/joins", response_model=List[DatasetJoinResponse])
 async def get_dataset_joins(
@@ -161,24 +167,46 @@ async def create_dataset_column(
     column_request: DatasetColumnCreateRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    # Extract table_id or resolve from table_name
-    table_id = column_request.table_id
-    if not table_id:
-        if column_request.table_name:
-            table = await dataset_service.get_table_by_name(db, dataset_id, column_request.table_name)
-            if not table:
-                raise HTTPException(status_code=404, detail=f"Table '{column_request.table_name}' not found in dataset")
-            table_id = table.id
-        else:
-             raise HTTPException(status_code=400, detail="Either table_id or table_name must be provided")
-
+    # Use dataset_table_id directly
+    table_id = column_request.dataset_table_id
+    
     # Base payload (DatasetColumnCreate)
-    col_data = DatasetColumnCreate(**column_request.model_dump(exclude={"table_id", "table_name"}))
+    col_data = DatasetColumnCreate(**column_request.model_dump(exclude={"dataset_table_id"}))
     
     saved_column = await dataset_service.save_column_metadata(db, dataset_id, table_id, col_data)
     if not saved_column:
         raise HTTPException(status_code=404, detail="Table not found in dataset")
     return saved_column
+
+
+@router.get("/{dataset_id}/columns", response_model=List[DatasetColumnResponse])
+async def get_dataset_columns(
+    dataset_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    dataset = await dataset_service.get_dataset(db, dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    return await dataset_service.get_dataset_columns(db, dataset_id)
+
+@router.get("/{dataset_id}/preview")
+async def preview_dataset(
+    dataset_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    dataset = await dataset_service.get_dataset(db, dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    result = await dataset_service.get_dataset_preview(db, dataset_id)
+    
+    if result and "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+        
+    return result
+
+
 
 
 
